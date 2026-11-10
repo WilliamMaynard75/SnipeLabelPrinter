@@ -56,10 +56,12 @@ if [[ -z "$PROFILE" ]]; then
     exit 0
 fi
 
-ditto -c -k --keepParent "$APP" "$ZIP"
-xcrun notarytool submit "$ZIP" --keychain-profile "$PROFILE" --wait
+# Upload from a temp folder so a failed submission never leaves a shareable-looking zip behind.
+UPLOAD=$(mktemp -d)
+trap 'rm -rf "$UPLOAD"' EXIT
+ditto -c -k --keepParent "$APP" "$UPLOAD/$ZIP"
+xcrun notarytool submit "$UPLOAD/$ZIP" --keychain-profile "$PROFILE" --wait
 xcrun stapler staple "$APP"
-rm "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 spctl --assess --type execute --verbose "$APP"
 echo "Built $PWD/$APP and $PWD/$ZIP (signed and notarized, ready to share)"
