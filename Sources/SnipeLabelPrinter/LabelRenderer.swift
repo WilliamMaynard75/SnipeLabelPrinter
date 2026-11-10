@@ -31,8 +31,13 @@ enum LabelRenderer {
     /// Resolution used to rasterize the PDF before downscaling to 180 dpi.
     private static let sourceDPI = 600.0
 
-    static func render(pdf url: URL, options: RenderOptions) throws -> MonoBitmap {
-        guard let doc = CGPDFDocument(url as CFURL), let page = doc.page(at: 1) else {
+    static func pageCount(of pdf: Data) -> Int {
+        document(pdf)?.numberOfPages ?? 0
+    }
+
+    /// Renders one page (1-based) of a label PDF.
+    static func render(pdf: Data, page pageNumber: Int = 1, options: RenderOptions) throws -> MonoBitmap {
+        guard let page = document(pdf)?.page(at: pageNumber) else {
             throw RenderError.unreadablePDF
         }
         let source = try rasterize(page)
@@ -120,6 +125,10 @@ enum LabelRenderer {
             }
         }
         return bitmap
+    }
+
+    private static func document(_ pdf: Data) -> CGPDFDocument? {
+        CGDataProvider(data: pdf as CFData).flatMap(CGPDFDocument.init)
     }
 
     private static func grayContext(width: Int, height: Int) -> CGContext? {

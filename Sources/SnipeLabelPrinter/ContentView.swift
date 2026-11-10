@@ -3,6 +3,8 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @State private var dropTargeted = false
+    @State private var tagEntry = ""
+    @FocusState private var tagFieldFocused: Bool
 
     var body: some View {
         HSplitView {
@@ -23,10 +25,20 @@ struct ContentView: View {
 
     private var labelList: some View {
         VStack(spacing: 0) {
+            HStack {
+                TextField("Asset tag, or scan a label", text: $tagEntry)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($tagFieldFocused)
+                    .onSubmit(fetchTags)
+                Button("Fetch", action: fetchTags).disabled(tagEntry.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(8)
+            Divider()
             if model.items.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "doc.badge.plus").font(.system(size: 40)).foregroundStyle(.secondary)
-                    Text("Drop Snipe-IT label PDFs here").font(.headline)
+                    Text("Type an asset tag above,").font(.headline)
+                    Text("or drop Snipe-IT label PDFs here").font(.headline)
                     Button("Choose Files…") { model.chooseFiles() }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -49,6 +61,14 @@ struct ContentView: View {
             model.add(urls)
             return true
         } isTargeted: { dropTargeted = $0 }
+        .onAppear { tagFieldFocused = true }
+    }
+
+    /// Fetches what's typed, then clears the field and keeps focus so the next tag or scan can follow.
+    private func fetchTags() {
+        model.addTags(tagEntry)
+        tagEntry = ""
+        tagFieldFocused = true
     }
 
     private var settings: some View {
@@ -107,7 +127,7 @@ struct ContentView: View {
                 Button("Print") { model.printJob() }
                     .keyboardShortcut("p")
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.job == nil || model.isBusy)
+                    .disabled(model.job == nil || model.isBusy || model.isFetching)
             }
         }
     }
@@ -128,6 +148,11 @@ struct LabelRow: View {
                         .font(.caption).foregroundStyle(.secondary)
                 } else if let error = item.error {
                     Text(error).foregroundStyle(.red)
+                } else if item.isLoading {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Fetching from Snipe-IT…").foregroundStyle(.secondary)
+                    }
                 }
             }
             Spacer()

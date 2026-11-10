@@ -3,11 +3,14 @@ import Foundation
 
 struct LabelItem: Identifiable {
     let id = UUID()
-    let url: URL
+    var name: String
+    /// Nil while the label is still being fetched from Snipe-IT.
+    var pdf: Data?
+    var page = 1
     var bitmap: MonoBitmap?
     var error: String?
 
-    var name: String { url.deletingPathExtension().lastPathComponent }
+    var isLoading: Bool { pdf == nil && error == nil }
 }
 
 @MainActor
@@ -24,6 +27,8 @@ final class AppModel: ObservableObject {
     @Published var isBusy = false
     @Published var lastError: String?
 
+    var isFetching: Bool { items.contains(where: \.isLoading) }
+
     /// Everything that will go to the printer, chained into one job so the leader tape is only fed once.
     var job: MonoBitmap? {
         let labels = items.compactMap(\.bitmap)
@@ -32,11 +37,57 @@ final class AppModel: ObservableObject {
             .padded(trailing: MonoBitmap.dots(mm: endMarginMM))
     }
 
+    /// Adds PDF files, one item per page (Snipe-IT puts one label on each page).
     func add(_ urls: [URL]) {
         for url in urls where url.pathExtension.lowercased() == "pdf" {
-            var item = LabelItem(url: url)
+            let name = url.deletingPathExtension().lastPathComponent
+            guard let pdf = try? Data(contentsOf: url) else {
+                items.append(LabelItem(name: name, error: "Couldn't read the file."))
+                continue
+            }
+            items.append(contentsOf: pages(of: pdf, name: name))
+        }
+    }
+
+    /// Fetches labels from Snipe-IT. `text` holds asset tags or scanned QR links,
+    /// separated by commas, spaces or new lines.
+    func addTags(_ text: String) {
+        let entries = text.split(whereSeparator: { ", ;\n\t".contains($0) }).map(String.init)
+        guard !entries.isEmpty else { return }
+        let client: SnipeITClient
+        do { client = try SnipeITClient.fromSettings() } catch {
+            lastError = error.localizedDescription
+            return
+        }
+        lastError = nil
+        for entry in entries {
+            let placeholder = LabelItem(name: entry)
+            items.append(placeholder)
+            Task {
+                do {
+                    let (tag, pdf) = try await client.label(for: entry)
+                    replace(placeholder.id, withPagesOf: pdf, name: tag)
+                } catch {
+                    if let i = items.firstIndex(where: { $0.id == placeholder.id }) {
+                        items[i].error = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    private func replace(_ id: UUID, withPagesOf pdf: Data, name: String) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        items.replaceSubrange(i...i, with: pages(of: pdf, name: name))
+    }
+
+    private func pages(of pdf: Data, name: String) -> [LabelItem] {
+        let count = LabelRenderer.pageCount(of: pdf)
+        guard count > 0 else { return [LabelItem(name: name, pdf: pdf, error: RenderError.unreadablePDF.localizedDescription)] }
+        return (1...count).map { page in
+            var item = LabelItem(name: count > 1 ? "\(name) (\(page) of \(count))" : name, pdf: pdf, page: page)
             render(&item)
-            items.append(item)
+            return item
         }
     }
 
@@ -53,8 +104,9 @@ final class AppModel: ObservableObject {
     }
 
     private func render(_ item: inout LabelItem) {
+        guard let pdf = item.pdf else { return }
         do {
-            item.bitmap = try LabelRenderer.render(pdf: item.url, options: options)
+            item.bitmap = try LabelRenderer.render(pdf: pdf, page: item.page, options: options)
             item.error = nil
         } catch {
             item.bitmap = nil
