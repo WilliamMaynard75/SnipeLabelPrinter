@@ -3,3 +3,4 @@
 .swiftpm/
 *.app
 xcuserdata/
+*.zip
