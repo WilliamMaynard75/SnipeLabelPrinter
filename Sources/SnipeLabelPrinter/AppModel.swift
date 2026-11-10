@@ -27,6 +27,13 @@ final class AppModel: ObservableObject {
     @Published var isBusy = false
     @Published var lastError: String?
 
+    /// The asset search box. Typing searches Snipe-IT after a short pause.
+    @Published var searchText = "" { didSet { if searchText != oldValue { scheduleSearch() } } }
+    @Published var searchResults: [AssetSummary] = []
+    @Published var searchMessage: String?
+    @Published var isSearching = false
+    private var searchTask: Task<Void, Never>?
+
     var isFetching: Bool { items.contains(where: \.isLoading) }
 
     /// Everything that will go to the printer, chained into one job so the leader tape is only fed once.
@@ -49,10 +56,87 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Fetches labels from Snipe-IT. `text` holds asset tags or scanned QR links,
-    /// separated by commas, spaces or new lines.
-    func addTags(_ text: String) {
-        let entries = text.split(whereSeparator: { ", ;\n\t".contains($0) }).map(String.init)
+    /// Return in the search box. A single entry with several matches shows them to pick from;
+    /// anything clear-cut (exact tag or name, one match, a scanned QR link, a comma list) is fetched right away.
+    func submitSearch() {
+        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        if Self.isDirectEntry(text) {
+            clearSearch()
+            fetch(text)
+            return
+        }
+        searchTask?.cancel()
+        searchTask = Task {
+            guard let results = await runSearch(text) else { return }
+            if let match = SnipeITClient.pick(text, from: results) {
+                add(match)
+            } else if results.isEmpty {
+                clearSearch()
+                fetch(text)  // Lets the label lookup report "not found" in the list.
+            } else {
+                searchMessage = "\(results.count) matches. Pick one below."
+            }
+        }
+    }
+
+    /// Fetches the label for a search result.
+    func add(_ asset: AssetSummary) {
+        clearSearch()
+        fetch(asset.tag, title: asset.name.isEmpty ? asset.tag : "\(asset.name) · \(asset.tag)")
+    }
+
+    func clearSearch() {
+        searchTask?.cancel()
+        searchText = ""
+        searchResults = []
+        searchMessage = nil
+        isSearching = false
+    }
+
+    /// Comma-separated lists and scanned QR links skip the search list.
+    private static func isDirectEntry(_ text: String) -> Bool {
+        text.contains("://") || text.contains(where: { ",;\n\t".contains($0) })
+    }
+
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 2, !Self.isDirectEntry(text) else {
+            searchResults = []
+            searchMessage = nil
+            return
+        }
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            _ = await runSearch(text)
+        }
+    }
+
+    /// Searches Snipe-IT and publishes the results; nil if cancelled or failed.
+    private func runSearch(_ text: String) async -> [AssetSummary]? {
+        isSearching = true
+        // A cancelled search leaves the spinner to the search that replaced it.
+        defer { if !Task.isCancelled { isSearching = false } }
+        do {
+            let results = try await SnipeITClient.fromSettings().search(text)
+            guard !Task.isCancelled else { return nil }
+            searchResults = results
+            searchMessage = results.isEmpty ? "No assets match \u{201C}\(text)\u{201D}." : nil
+            return results
+        } catch {
+            if !Task.isCancelled { searchMessage = error.localizedDescription }
+            return nil
+        }
+    }
+
+    /// Fetches labels from Snipe-IT. `text` holds asset tags, names or scanned QR links,
+    /// separated by commas, semicolons or new lines.
+    private func fetch(_ text: String, title: String? = nil) {
+        let entries = text.split(whereSeparator: { ",;\n\t".contains($0) })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
         guard !entries.isEmpty else { return }
         let client: SnipeITClient
         do { client = try SnipeITClient.fromSettings() } catch {
@@ -61,12 +145,12 @@ final class AppModel: ObservableObject {
         }
         lastError = nil
         for entry in entries {
-            let placeholder = LabelItem(name: entry)
+            let placeholder = LabelItem(name: title ?? entry)
             items.append(placeholder)
             Task {
                 do {
                     let (tag, pdf) = try await client.label(for: entry)
-                    replace(placeholder.id, withPagesOf: pdf, name: tag)
+                    replace(placeholder.id, withPagesOf: pdf, name: title ?? tag)
                 } catch {
                     if let i = items.firstIndex(where: { $0.id == placeholder.id }) {
                         items[i].error = error.localizedDescription

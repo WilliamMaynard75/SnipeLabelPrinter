@@ -3,7 +3,6 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @State private var dropTargeted = false
-    @State private var tagEntry = ""
     @FocusState private var tagFieldFocused: Bool
 
     var body: some View {
@@ -25,19 +24,12 @@ struct ContentView: View {
 
     private var labelList: some View {
         VStack(spacing: 0) {
-            HStack {
-                TextField("Asset tag, or scan a label", text: $tagEntry)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($tagFieldFocused)
-                    .onSubmit(fetchTags)
-                Button("Fetch", action: fetchTags).disabled(tagEntry.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            .padding(8)
+            searchBar
             Divider()
             if model.items.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "doc.badge.plus").font(.system(size: 40)).foregroundStyle(.secondary)
-                    Text("Type an asset tag above,").font(.headline)
+                    Text("Search for an asset above,").font(.headline)
                     Text("or drop Snipe-IT label PDFs here").font(.headline)
                     Button("Choose Files…") { model.chooseFiles() }
                 }
@@ -64,11 +56,42 @@ struct ContentView: View {
         .onAppear { tagFieldFocused = true }
     }
 
-    /// Fetches what's typed, then clears the field and keeps focus so the next tag or scan can follow.
-    private func fetchTags() {
-        model.addTags(tagEntry)
-        tagEntry = ""
-        tagFieldFocused = true
+    /// Search box plus, while typing, matching assets to click.
+    private var searchBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Asset name or tag, or scan a label", text: $model.searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($tagFieldFocused)
+                    .onSubmit {
+                        model.submitSearch()
+                        tagFieldFocused = true
+                    }
+                    .onExitCommand { model.clearSearch() }
+                if model.isSearching { ProgressView().controlSize(.small) }
+            }
+            if let message = model.searchMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+            if !model.searchResults.isEmpty && !model.searchText.isEmpty {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(model.searchResults) { asset in
+                            SearchResultRow(asset: asset) {
+                                model.add(asset)
+                                tagFieldFocused = true
+                            }
+                            Divider()
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+                .background(.background, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            }
+        }
+        .padding(8)
     }
 
     private var settings: some View {
@@ -130,6 +153,30 @@ struct ContentView: View {
                     .disabled(model.job == nil || model.isBusy || model.isFetching)
             }
         }
+    }
+}
+
+struct SearchResultRow: View {
+    let asset: AssetSummary
+    let onAdd: () -> Void
+
+    var body: some View {
+        Button(action: onAdd) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(asset.name.isEmpty ? asset.tag : asset.name).font(.body.weight(.medium))
+                    Text([asset.tag, asset.model, asset.assignedTo].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "plus.circle.fill").foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Add this asset's label")
     }
 }
 

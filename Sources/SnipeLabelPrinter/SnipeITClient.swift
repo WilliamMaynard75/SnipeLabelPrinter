@@ -6,6 +6,7 @@ enum SnipeITError: LocalizedError {
     case badServerURL
     case unauthorized
     case notFound(String)
+    case ambiguous(String, Int)
     case server(String)
 
     var errorDescription: String? {
@@ -14,9 +15,19 @@ enum SnipeITError: LocalizedError {
         case .badServerURL: "The Snipe-IT address in Settings isn't a valid URL."
         case .unauthorized: "Snipe-IT rejected the API key. Check it in Settings (⌘,)."
         case let .notFound(entry): "\(entry): asset not found in Snipe-IT."
+        case let .ambiguous(entry, count): "\(entry): \(count) assets match. Search for it on its own and pick one."
         case let .server(message): "Snipe-IT: \(message)"
         }
     }
+}
+
+/// One row from an asset search.
+struct AssetSummary: Identifiable, Equatable {
+    let id: Int
+    let tag: String
+    let name: String
+    let model: String?
+    let assignedTo: String?
 }
 
 /// Fetches label PDFs from Snipe-IT's label API, using the label template configured in Snipe-IT.
@@ -35,22 +46,40 @@ struct SnipeITClient {
         return SnipeITClient(server: server, token: token)
     }
 
-    /// Returns the asset tag and its label PDF. `entry` is an asset tag, or a scanned
-    /// Snipe-IT QR link like https://…/hardware/1432.
+    /// Returns the asset tag and its label PDF. `entry` is an asset tag, an asset name, or a scanned
+    /// Snipe-IT QR link like https://…/hardware/1432. Tags are tried first since that's one request.
     func label(for entry: String) async throws -> (tag: String, pdf: Data) {
         let tag = try await assetTag(for: entry)
+        do {
+            return (tag, try await labelPDF(tag: tag))
+        } catch SnipeITError.notFound where tag == entry {
+            let matches = try await search(entry)
+            guard let match = Self.pick(entry, from: matches) else {
+                throw matches.isEmpty ? SnipeITError.notFound(entry) : SnipeITError.ambiguous(entry, matches.count)
+            }
+            return (match.tag, try await labelPDF(tag: match.tag))
+        }
+    }
+
+    /// The search result `text` clearly refers to: an exact tag or name match, or the only result.
+    static func pick(_ text: String, from results: [AssetSummary]) -> AssetSummary? {
+        results.first { $0.tag.caseInsensitiveCompare(text) == .orderedSame || $0.name.caseInsensitiveCompare(text) == .orderedSame }
+            ?? (results.count == 1 ? results[0] : nil)
+    }
+
+    private func labelPDF(tag: String) async throws -> Data {
         let body = try JSONSerialization.data(withJSONObject: ["asset_tags": [tag]])
         let (data, response) = try await send("api/v1/hardware/labels", method: "POST", body: body)
-        if response.statusCode == 404 { throw SnipeITError.notFound(entry) }
+        if response.statusCode == 404 { throw SnipeITError.notFound(tag) }
         try check(data, response)
 
         // Some Snipe-IT versions answer with the PDF itself, newer ones wrap it in JSON as base64.
-        if data.starts(with: Data("%PDF".utf8)) { return (tag, data) }
+        if data.starts(with: Data("%PDF".utf8)) { return data }
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let payload = json["payload"] as? [String: Any],
            let base64 = payload["pdf"] as? String,
            let pdf = Data(base64Encoded: base64) {
-            return (tag, pdf)
+            return pdf
         }
         throw SnipeITError.server(errorMessage(in: data) ?? "no label PDF in the response")
     }
@@ -61,6 +90,24 @@ struct SnipeITClient {
         try check(data, response)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         return json?["total"] as? Int ?? 0
+    }
+
+    /// Snipe-IT's asset search: partial, case-insensitive matches on name, tag, serial and more.
+    func search(_ text: String, limit: Int = 20) async throws -> [AssetSummary] {
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "search", value: text), URLQueryItem(name: "limit", value: "\(limit)")]
+        // URLComponents leaves "+" alone, which servers read as a space.
+        let encoded = (query.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B")
+        let (data, response) = try await send("api/v1/hardware?\(encoded)", method: "GET")
+        try check(data, response)
+        let rows = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["rows"] as? [[String: Any]] ?? []
+        return rows.compactMap { row in
+            guard let id = row["id"] as? Int, let tag = row["asset_tag"] as? String else { return nil }
+            return AssetSummary(id: id, tag: tag,
+                                name: row["name"] as? String ?? "",
+                                model: (row["model"] as? [String: Any])?["name"] as? String,
+                                assignedTo: (row["assigned_to"] as? [String: Any])?["name"] as? String)
+        }
     }
 
     private func assetTag(for entry: String) async throws -> String {
