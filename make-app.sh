@@ -16,8 +16,10 @@ swift build -c release
 APP="Snipe-IT Label Printer.app"
 ZIP="Snipe-IT Label Printer.zip"
 rm -rf "$APP" "$ZIP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/SnipeLabelPrinter "$APP/Contents/MacOS/"
+# Regenerate with: swift Icon/make-icon.swift && iconutil -c icns Icon/AppIcon.iconset -o Icon/AppIcon.icns
+cp Icon/AppIcon.icns "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -26,9 +28,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key><string>Snipe-IT Label Printer</string>
     <key>CFBundleIdentifier</key><string>com.buckeyerec.snipelabelprinter</string>
     <key>CFBundleExecutable</key><string>SnipeLabelPrinter</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>1.1</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
